@@ -303,14 +303,16 @@
             };
 
             // ==================== YOUTUBE API ====================
-            const syncChannelWithYouTube = async (channel) => {
+            const syncChannelWithYouTube = async (channel, silent = false) => {
                 if (!config.youtubeApiKey) {
-                    alert('Configure sua YouTube API Key nas Configurações!');
-                    setShowSettings(true);
-                    return;
+                    if (!silent) {
+                        alert('Configure sua YouTube API Key nas Configurações!');
+                        setShowSettings(true);
+                    }
+                    return false;
                 }
 
-                setSyncing(true);
+                if (!silent) setSyncing(true);
                 try {
                     let channelId = channel.youtube_id;
                     
@@ -322,7 +324,7 @@
                         } else if (url.includes('/@')) {
                             // Buscar por handle
                             const handle = url.split('/@')[1].split('/')[0].split('?')[0];
-                            const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=${handle}&key=${config.youtubeApiKey}`);
+                            const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&type=channel&q=${handle}&key=${config.youtubeApiKey}`);
                             const searchData = await searchRes.json();
                             if (searchData.items?.[0]) {
                                 channelId = searchData.items[0].snippet.channelId;
@@ -331,34 +333,50 @@
                     }
 
                     if (!channelId) {
-                        alert('Não foi possível identificar o canal. Verifique a URL.');
-                        setSyncing(false);
-                        return;
+                        if (!silent) alert('Não foi possível identificar o canal. Adicione a URL do YouTube.');
+                        if (!silent) setSyncing(false);
+                        return false;
                     }
 
                     // Buscar dados do canal
                     const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${channelId}&key=${config.youtubeApiKey}`);
                     const data = await res.json();
 
+                    if (data.error) {
+                        console.error('YouTube API Error:', data.error);
+                        if (!silent) alert('Erro na API: ' + data.error.message);
+                        if (!silent) setSyncing(false);
+                        return false;
+                    }
+
                     if (data.items?.[0]) {
                         const ytChannel = data.items[0];
-                        await supabase.from('channels').update({
+                        const { error } = await supabase.from('channels').update({
                             youtube_id: channelId,
-                            profile_pic: ytChannel.snippet.thumbnails?.default?.url,
+                            profile_pic: ytChannel.snippet.thumbnails?.medium?.url || ytChannel.snippet.thumbnails?.default?.url,
                             subscribers: parseInt(ytChannel.statistics.subscriberCount) || 0,
                             total_views: parseInt(ytChannel.statistics.viewCount) || 0,
                         }).eq('id', channel.id);
                         
-                        alert('✅ Canal sincronizado com sucesso!');
-                        loadData();
+                        if (error) {
+                            console.error('Supabase error:', error);
+                            if (!silent) alert('Erro no banco: ' + error.message + '\n\nExecute o SQL de atualização no Supabase!');
+                        } else {
+                            if (!silent) {
+                                alert('✅ Canal sincronizado!\n\n📊 ' + ytChannel.snippet.title + '\n👥 ' + parseInt(ytChannel.statistics.subscriberCount).toLocaleString() + ' inscritos\n👁️ ' + parseInt(ytChannel.statistics.viewCount).toLocaleString() + ' views');
+                                loadData();
+                            }
+                            return true;
+                        }
                     } else {
-                        alert('Canal não encontrado no YouTube');
+                        if (!silent) alert('Canal não encontrado no YouTube');
                     }
                 } catch (error) {
                     console.error('Erro ao sincronizar:', error);
-                    alert('Erro ao sincronizar: ' + error.message);
+                    if (!silent) alert('Erro: ' + error.message);
                 }
-                setSyncing(false);
+                if (!silent) setSyncing(false);
+                return false;
             };
 
             // ==================== CRUD CHANNELS ====================
@@ -579,7 +597,7 @@
 
             // ==================== CHART ====================
             useEffect(() => {
-                if (activeTab === 'overview' && viewsChartRef.current && videos.length > 0) {
+                if (activeTab === 'overview' && viewsChartRef.current && filteredVideos.length > 0) {
                     if (viewsChartInstance.current) viewsChartInstance.current.destroy();
 
                     const days = [...Array(viewsPeriod)].map((_, i) => {
@@ -587,7 +605,7 @@
                         return d.toISOString().split('T')[0];
                     });
 
-                    const viewsByDay = days.map(date => videos.filter(v => v.publish_date === date).reduce((sum, v) => sum + (v.views || 0), 0));
+                    const viewsByDay = days.map(date => filteredVideos.filter(v => v.publish_date === date).reduce((sum, v) => sum + (v.views || 0), 0));
 
                     viewsChartInstance.current = new Chart(viewsChartRef.current, {
                         type: 'line',
@@ -617,7 +635,7 @@
                         }
                     });
                 }
-            }, [activeTab, videos, viewsPeriod]);
+            }, [activeTab, videos, viewsPeriod, selectedChannel]);
 
             // ==================== LOADING ====================
             if (loading) {
@@ -744,7 +762,19 @@
 
                             {/* ==================== OVERVIEW ==================== */}
                             {activeTab === 'overview' && (
-                                <div className="grid lg:grid-cols-2 gap-4 md:gap-6">
+                                <div>
+                                    {/* Filtro por Canal */}
+                                    <div className="flex flex-wrap gap-3 mb-4">
+                                        <select value={selectedChannel} onChange={(e) => setSelectedChannel(e.target.value)} className="rounded-xl px-4 py-2">
+                                            <option value="all">Todos os Canais</option>
+                                            {channels.map(c => { const l = LANGUAGES.find(x => x.code === c.language); return <option key={c.id} value={c.id}>{l?.flag} {c.name}</option>; })}
+                                        </select>
+                                        <span className="text-gray-400 self-center text-sm">
+                                            {selectedChannel === 'all' ? `${videos.length} vídeos total` : `${videos.filter(v => v.channel_id === selectedChannel).length} vídeos`}
+                                        </span>
+                                    </div>
+                                    
+                                    <div className="grid lg:grid-cols-2 gap-4 md:gap-6">
                                     {/* Views Chart */}
                                     <div className="glass rounded-2xl p-4 md:p-6">
                                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
@@ -765,9 +795,9 @@
 
                                     {/* Top Videos */}
                                     <div className="glass rounded-2xl p-4 md:p-6">
-                                        <h3 className="text-lg font-semibold mb-4">🏆 Top Vídeos</h3>
+                                        <h3 className="text-lg font-semibold mb-4">🏆 Top Vídeos {selectedChannel !== 'all' && `(${channels.find(c => c.id === selectedChannel)?.name})`}</h3>
                                         <div className="space-y-3">
-                                            {videos.sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 5).map((v, i) => {
+                                            {(selectedChannel === 'all' ? videos : videos.filter(v => v.channel_id === selectedChannel)).sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 5).map((v, i) => {
                                                 const channel = channels.find(c => c.id === v.channel_id);
                                                 const lang = LANGUAGES.find(l => l.code === channel?.language);
                                                 const perfTag = getPerformanceTag(v.performance_score || 50);
@@ -835,6 +865,7 @@
                                         </div>
                                     </div>
                                 </div>
+                                </div>
                             )}
 
                             {/* ==================== CHANNELS ==================== */}
@@ -847,6 +878,32 @@
                                         const avgCTR = channelVideos.length > 0 ? (channelVideos.reduce((sum, v) => sum + (v.ctr || 0), 0) / channelVideos.filter(v => v.ctr).length).toFixed(2) : 0;
                                         const totalRevenue = channelVideos.reduce((sum, v) => sum + (v.revenue || 0), 0);
                                         const estimatedRevenue = (totalViews / 1000) * (lang?.rpmAvg || 0);
+                                        const totalWatchHours = channelVideos.reduce((sum, v) => sum + (v.watch_time_hours || 0), 0);
+                                        
+                                        // Cálculo de monetização
+                                        const subsProgress = Math.min((channel.subscribers || 0) / 1000 * 100, 100);
+                                        const hoursProgress = Math.min(totalWatchHours / 4000 * 100, 100);
+                                        
+                                        // Estimativa de dias para monetizar
+                                        let daysToMonetize = null;
+                                        if (!channel.monetized && channelVideos.length >= 7) {
+                                            const last7Days = channelVideos.filter(v => {
+                                                const d = new Date(v.publish_date);
+                                                const now = new Date();
+                                                return (now - d) / (1000*60*60*24) <= 7;
+                                            });
+                                            const weeklyHours = last7Days.reduce((s, v) => s + (v.watch_time_hours || 0), 0);
+                                            const weeklySubs = last7Days.reduce((s, v) => s + (v.subscribers_gained || 0), 0);
+                                            
+                                            const hoursNeeded = Math.max(0, 4000 - totalWatchHours);
+                                            const subsNeeded = Math.max(0, 1000 - (channel.subscribers || 0));
+                                            
+                                            if (weeklyHours > 0 && weeklySubs > 0) {
+                                                const daysForHours = hoursNeeded > 0 ? (hoursNeeded / weeklyHours) * 7 : 0;
+                                                const daysForSubs = subsNeeded > 0 ? (subsNeeded / weeklySubs) * 7 : 0;
+                                                daysToMonetize = Math.ceil(Math.max(daysForHours, daysForSubs));
+                                            }
+                                        }
                                         
                                         return (
                                             <div key={channel.id} className="glass rounded-2xl p-4 md:p-6 hover:ring-2 hover:ring-indigo-500/30 transition">
@@ -863,7 +920,7 @@
                                                         </div>
                                                     </div>
                                                     <div className="flex gap-1">
-                                                        <button onClick={() => syncChannelWithYouTube(channel)} disabled={syncing} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-red-500" title="Sincronizar YouTube">
+                                                        <button onClick={() => syncChannelWithYouTube(channel, false)} disabled={syncing} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-red-500" title="Sincronizar YouTube">
                                                             {syncing ? <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin"></div> : Icons.youtube}
                                                         </button>
                                                         <button onClick={() => { setEditingChannel(channel); setShowAddChannel(true); }} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white">{Icons.edit}</button>
@@ -876,6 +933,37 @@
                                                     <div className="bg-white/5 rounded-xl p-3"><p className="text-xs text-gray-400">Views</p><p className="text-xl font-bold">{totalViews.toLocaleString()}</p></div>
                                                     <div className="bg-white/5 rounded-xl p-3"><p className="text-xs text-gray-400">CTR</p><p className={`text-xl font-bold ${parseFloat(avgCTR) >= 6 ? 'text-green-400' : 'text-yellow-400'}`}>{avgCTR}%</p></div>
                                                 </div>
+                                                
+                                                {/* Progresso de Monetização */}
+                                                {!channel.monetized && (
+                                                    <div className="mb-4 p-3 bg-white/5 rounded-xl">
+                                                        <div className="flex justify-between items-center mb-2">
+                                                            <span className="text-xs text-gray-400">📈 Progresso p/ Monetização</span>
+                                                            {daysToMonetize && <span className="text-xs text-indigo-400">~{daysToMonetize}d</span>}
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <div>
+                                                                <div className="flex justify-between text-xs mb-1">
+                                                                    <span>Inscritos</span>
+                                                                    <span className={subsProgress >= 100 ? 'text-green-400' : 'text-gray-400'}>{channel.subscribers || 0}/1000</span>
+                                                                </div>
+                                                                <div className="bg-white/10 rounded-full h-2">
+                                                                    <div className={`h-2 rounded-full ${subsProgress >= 100 ? 'bg-green-500' : 'bg-indigo-500'}`} style={{width: `${subsProgress}%`}}></div>
+                                                                </div>
+                                                            </div>
+                                                            <div>
+                                                                <div className="flex justify-between text-xs mb-1">
+                                                                    <span>Horas</span>
+                                                                    <span className={hoursProgress >= 100 ? 'text-green-400' : 'text-gray-400'}>{totalWatchHours.toFixed(0)}/4000h</span>
+                                                                </div>
+                                                                <div className="bg-white/10 rounded-full h-2">
+                                                                    <div className={`h-2 rounded-full ${hoursProgress >= 100 ? 'bg-green-500' : 'bg-purple-500'}`} style={{width: `${hoursProgress}%`}}></div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
                                                 <div className="flex justify-between items-center pt-4 border-t border-white/10">
                                                     <div>
                                                         <p className="text-xs text-gray-400">RPM: ${lang?.rpmMin}-{lang?.rpmMax}</p>
@@ -1037,42 +1125,62 @@
 
                             {/* ==================== PATTERNS ==================== */}
                             {activeTab === 'patterns' && (
-                                <div className="grid lg:grid-cols-2 gap-6">
+                                <div>
+                                    {/* Filtro por Canal */}
+                                    <div className="flex flex-wrap gap-3 mb-4">
+                                        <select value={selectedChannel} onChange={(e) => setSelectedChannel(e.target.value)} className="rounded-xl px-4 py-2">
+                                            <option value="all">Todos os Canais</option>
+                                            {channels.map(c => { const l = LANGUAGES.find(x => x.code === c.language); return <option key={c.id} value={c.id}>{l?.flag} {c.name}</option>; })}
+                                        </select>
+                                        <span className="text-gray-400 self-center text-sm">
+                                            {(selectedChannel === 'all' ? videos : videos.filter(v => v.channel_id === selectedChannel)).length} vídeos analisados
+                                        </span>
+                                    </div>
+                                    
+                                    <div className="grid lg:grid-cols-2 gap-6">
                                     <div className="glass rounded-2xl p-4 md:p-6">
                                         <h3 className="text-lg font-semibold mb-4">🧠 Análise de Padrões</h3>
                                         <div className="space-y-3">
-                                            {Object.entries(videos.reduce((acc, v) => { const p = v.detected_pattern || 'Outro'; if (!acc[p]) acc[p] = { videos: [], views: 0, ctr: 0 }; acc[p].videos.push(v); acc[p].views += v.views || 0; acc[p].ctr += v.ctr || 0; return acc; }, {}))
-                                            .map(([pattern, data]) => ({ pattern, count: data.videos.length, totalViews: data.views, avgCTR: (data.ctr / data.videos.length).toFixed(2), avgViews: Math.round(data.views / data.videos.length) }))
-                                            .sort((a, b) => b.totalViews - a.totalViews).slice(0, 10).map((item, i) => (
-                                                <div key={item.pattern} className="p-4 bg-white/5 rounded-xl">
-                                                    <div className="flex justify-between items-start mb-2">
-                                                        <div><h4 className="font-semibold">{item.pattern}</h4><p className="text-xs text-gray-400">{item.count} vídeos</p></div>
-                                                        <div className="text-right"><p className="font-bold text-indigo-400">{item.totalViews.toLocaleString()} views</p><p className="text-xs text-gray-400">~{item.avgViews.toLocaleString()}/vídeo</p></div>
+                                            {(() => {
+                                                const filteredVids = selectedChannel === 'all' ? videos : videos.filter(v => v.channel_id === selectedChannel);
+                                                return Object.entries(filteredVids.reduce((acc, v) => { const p = v.detected_pattern || 'Outro'; if (!acc[p]) acc[p] = { videos: [], views: 0, ctr: 0 }; acc[p].videos.push(v); acc[p].views += v.views || 0; acc[p].ctr += v.ctr || 0; return acc; }, {}))
+                                                .map(([pattern, data]) => ({ pattern, count: data.videos.length, totalViews: data.views, avgCTR: data.videos.length > 0 ? (data.ctr / data.videos.length).toFixed(2) : '0', avgViews: data.videos.length > 0 ? Math.round(data.views / data.videos.length) : 0 }))
+                                                .sort((a, b) => b.totalViews - a.totalViews).slice(0, 10).map((item, i) => (
+                                                    <div key={item.pattern} className="p-4 bg-white/5 rounded-xl">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <div><h4 className="font-semibold">{item.pattern}</h4><p className="text-xs text-gray-400">{item.count} vídeos</p></div>
+                                                            <div className="text-right"><p className="font-bold text-indigo-400">{item.totalViews.toLocaleString()} views</p><p className="text-xs text-gray-400">~{item.avgViews.toLocaleString()}/vídeo</p></div>
+                                                        </div>
+                                                        <div className="flex items-center gap-4 mt-2">
+                                                            <div className="flex-1 bg-white/10 rounded-full h-2"><div className={`h-2 rounded-full ${parseFloat(item.avgCTR) >= 6 ? 'bg-green-500' : parseFloat(item.avgCTR) >= 4 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(parseFloat(item.avgCTR) * 10, 100)}%` }}></div></div>
+                                                            <span className={`text-sm font-medium ${parseFloat(item.avgCTR) >= 6 ? 'text-green-400' : parseFloat(item.avgCTR) >= 4 ? 'text-yellow-400' : 'text-red-400'}`}>{item.avgCTR}% CTR</span>
+                                                        </div>
                                                     </div>
-                                                    <div className="flex items-center gap-4 mt-2">
-                                                        <div className="flex-1 bg-white/10 rounded-full h-2"><div className={`h-2 rounded-full ${parseFloat(item.avgCTR) >= 6 ? 'bg-green-500' : parseFloat(item.avgCTR) >= 4 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(parseFloat(item.avgCTR) * 10, 100)}%` }}></div></div>
-                                                        <span className={`text-sm font-medium ${parseFloat(item.avgCTR) >= 6 ? 'text-green-400' : parseFloat(item.avgCTR) >= 4 ? 'text-yellow-400' : 'text-red-400'}`}>{item.avgCTR}% CTR</span>
-                                                    </div>
-                                                </div>
-                                            ))}
+                                                ));
+                                            })()}
+                                            {(selectedChannel === 'all' ? videos : videos.filter(v => v.channel_id === selectedChannel)).length === 0 && 
+                                                <p className="text-gray-400 text-center py-8">Nenhum vídeo para analisar</p>
+                                            }
                                         </div>
                                     </div>
                                     <div className="glass rounded-2xl p-4 md:p-6">
                                         <h3 className="text-lg font-semibold mb-4">⚠️ Alertas de Saturação</h3>
                                         {(() => {
+                                            const filteredVids = selectedChannel === 'all' ? videos : videos.filter(v => v.channel_id === selectedChannel);
                                             const last7Days = new Date(); last7Days.setDate(last7Days.getDate() - 7);
-                                            const recentPatterns = videos.filter(v => new Date(v.publish_date) >= last7Days).reduce((acc, v) => { const p = v.detected_pattern || 'Outro'; acc[p] = (acc[p] || 0) + 1; return acc; }, {});
+                                            const recentPatterns = filteredVids.filter(v => new Date(v.publish_date) >= last7Days).reduce((acc, v) => { const p = v.detected_pattern || 'Outro'; acc[p] = (acc[p] || 0) + 1; return acc; }, {});
                                             const saturated = Object.entries(recentPatterns).filter(([_, count]) => count >= 3).sort((a, b) => b[1] - a[1]);
-                                            if (saturated.length === 0) return <div className="text-center py-8"><p className="text-4xl mb-2">✅</p><p className="text-green-400">Boa diversidade!</p></div>;
+                                            if (saturated.length === 0) return <div className="text-center py-8"><p className="text-4xl mb-2">✅</p><p className="text-green-400">Boa diversidade de padrões!</p><p className="text-xs text-gray-400 mt-2">Nenhum padrão repetido 3+ vezes nos últimos 7 dias</p></div>;
                                             return saturated.map(([pattern, count]) => (
                                                 <div key={pattern} className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded-xl mb-3">
                                                     <div className="flex items-center gap-2 mb-2"><span className="text-yellow-400">⚠️</span><span className="font-semibold">{pattern}</span></div>
                                                     <p className="text-sm text-gray-300">Usado <strong>{count}x</strong> nos últimos 7 dias</p>
-                                                    <p className="text-xs text-gray-400 mt-1">Sugestão: Experimente Heroísmo, Bondade ou Identidade Secreta</p>
+                                                    <p className="text-xs text-gray-400 mt-1">Sugestão: Diversifique para evitar saturação</p>
                                                 </div>
                                             ));
                                         })()}
                                     </div>
+                                </div>
                                 </div>
                             )}
                         </div>
@@ -1082,30 +1190,113 @@
                     
                     {/* Settings Modal */}
                     {showSettings && (
-                        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
-                            <div className="glass rounded-2xl p-6 w-full max-w-md animate-fadeIn">
+                        <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 overflow-y-auto">
+                            <div className="glass rounded-2xl p-6 w-full max-w-md my-8 animate-fadeIn">
                                 <div className="flex justify-between items-center mb-6">
                                     <h2 className="text-xl font-bold">⚙️ Configurações</h2>
                                     <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white/10 rounded-lg">{Icons.x}</button>
                                 </div>
                                 <div className="space-y-4">
-                                    <div>
-                                        <label className="block text-sm text-gray-400 mb-1">YouTube API Key</label>
-                                        <input type="text" value={config.youtubeApiKey || ''} onChange={(e) => saveConfig({ ...config, youtubeApiKey: e.target.value })}
-                                            className="w-full rounded-xl px-4 py-3" placeholder="AIza..." />
-                                        <p className="text-xs text-gray-500 mt-2">
-                                            Obtenha em: <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="text-indigo-400 hover:underline">Google Cloud Console</a>
-                                        </p>
+                                    {/* Status Supabase */}
+                                    <div className="p-4 bg-white/5 rounded-xl">
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-medium">🗄️ Supabase</span>
+                                            <span className={`text-sm ${dbConnected ? 'text-green-400' : 'text-red-400'}`}>
+                                                {dbConnected ? '✅ Conectado' : '❌ Desconectado'}
+                                            </span>
+                                        </div>
                                     </div>
-                                    <div className="pt-4 border-t border-white/10">
-                                        <h4 className="font-semibold mb-2">📖 Como obter a API Key:</h4>
-                                        <ol className="text-sm text-gray-400 space-y-1 list-decimal list-inside">
-                                            <li>Acesse Google Cloud Console</li>
+                                    
+                                    {/* YouTube API */}
+                                    <div className="p-4 bg-white/5 rounded-xl">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="font-medium">🔴 YouTube API</span>
+                                            <span id="ytApiStatus" className="text-sm text-gray-400">
+                                                {config.youtubeApiKey ? '🔑 Configurada' : 'Não configurada'}
+                                            </span>
+                                        </div>
+                                        <input 
+                                            type="text" 
+                                            value={config.youtubeApiKey || ''} 
+                                            onChange={(e) => saveConfig({ ...config, youtubeApiKey: e.target.value })}
+                                            className="w-full rounded-xl px-4 py-3 mb-2" 
+                                            placeholder="AIza..." 
+                                        />
+                                        <button 
+                                            onClick={async () => {
+                                                const status = document.getElementById('ytApiStatus');
+                                                if (!config.youtubeApiKey) {
+                                                    status.textContent = '❌ Cole a key primeiro';
+                                                    status.className = 'text-sm text-red-400';
+                                                    return;
+                                                }
+                                                status.textContent = '⏳ Testando...';
+                                                status.className = 'text-sm text-yellow-400';
+                                                try {
+                                                    const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=UC_x5XG1OV2P6uZZ5FSM9Ttw&key=${config.youtubeApiKey}`);
+                                                    const data = await res.json();
+                                                    if (data.error) {
+                                                        status.textContent = '❌ ' + (data.error.message || 'Key inválida');
+                                                        status.className = 'text-sm text-red-400';
+                                                    } else {
+                                                        status.textContent = '✅ Funcionando!';
+                                                        status.className = 'text-sm text-green-400';
+                                                    }
+                                                } catch (e) {
+                                                    status.textContent = '❌ Erro de conexão';
+                                                    status.className = 'text-sm text-red-400';
+                                                }
+                                            }} 
+                                            className="w-full bg-red-600 hover:bg-red-500 py-2 rounded-xl text-sm font-medium"
+                                        >
+                                            🧪 Testar API
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Instruções */}
+                                    <div className="p-4 bg-indigo-500/10 border border-indigo-500/30 rounded-xl">
+                                        <h4 className="font-semibold mb-2 text-sm">📖 Como obter a API Key:</h4>
+                                        <ol className="text-xs text-gray-400 space-y-1 list-decimal list-inside">
+                                            <li>Acesse <a href="https://console.cloud.google.com" target="_blank" className="text-indigo-400 hover:underline">console.cloud.google.com</a></li>
                                             <li>Crie um projeto (ou use existente)</li>
-                                            <li>Ative "YouTube Data API v3"</li>
-                                            <li>Crie uma credencial (API Key)</li>
-                                            <li>Cole aqui!</li>
+                                            <li>Vá em "APIs e Serviços" → "Biblioteca"</li>
+                                            <li>Busque e ative "YouTube Data API v3"</li>
+                                            <li>Vá em "Credenciais" → "Criar credencial" → "Chave de API"</li>
+                                            <li>Copie a chave e cole aqui!</li>
                                         </ol>
+                                    </div>
+                                    
+                                    {/* Sync All */}
+                                    <button 
+                                        onClick={async () => {
+                                            if (!config.youtubeApiKey) {
+                                                alert('Configure a YouTube API Key primeiro!');
+                                                return;
+                                            }
+                                            const channelsWithUrl = channels.filter(c => c.youtube_url);
+                                            if (channelsWithUrl.length === 0) {
+                                                alert('Nenhum canal tem URL do YouTube cadastrada!');
+                                                return;
+                                            }
+                                            if (!confirm(`Sincronizar ${channelsWithUrl.length} canal(is) com YouTube?`)) return;
+                                            setSyncing(true);
+                                            let success = 0;
+                                            for (const ch of channelsWithUrl) {
+                                                const ok = await syncChannelWithYouTube(ch, true);
+                                                if (ok) success++;
+                                            }
+                                            await loadData();
+                                            setSyncing(false);
+                                            alert(`✅ Sincronização concluída!\n\n${success}/${channelsWithUrl.length} canais atualizados`);
+                                        }}
+                                        disabled={syncing}
+                                        className="w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl font-medium disabled:opacity-50"
+                                    >
+                                        {syncing ? '⏳ Sincronizando...' : '🔄 Sincronizar Todos os Canais'}
+                                    </button>
+                                    
+                                    <div className="text-xs text-gray-500 text-center pt-2">
+                                        Dark Dashboard V3.2
                                     </div>
                                 </div>
                             </div>
